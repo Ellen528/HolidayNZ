@@ -1,0 +1,5 @@
+{
+  "name": "NZ Holiday Viz",
+  "description": "An interactive dashboard visualizing New Zealand's public, regional, and school holidays. Features an interactive regional map, calendar view, and AI-powered activity suggestions.",
+  "requestFramePermissions": []
+}
