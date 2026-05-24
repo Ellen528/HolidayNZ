@@ -1,3 +1,16 @@
+// ── Australian states / territories ───────────────────────────────────────────
+export enum StateId {
+  ACT = 'act',
+  NSW = 'nsw',
+  NT  = 'nt',
+  QLD = 'qld',
+  SA  = 'sa',
+  TAS = 'tas',
+  VIC = 'vic',
+  WA  = 'wa',
+}
+
+// ── New Zealand regions ────────────────────────────────────────────────────────
 export enum RegionId {
   Northland = 'northland',
   Auckland = 'auckland',
@@ -18,6 +31,8 @@ export enum RegionId {
   ChathamIslands = 'chatham' // Usually off map, but handled in logic
 }
 
+export type Country = 'nz' | 'au';
+
 export enum HolidayType {
   Public = 'public',
   Regional = 'regional',
@@ -27,9 +42,12 @@ export enum HolidayType {
 export interface Holiday {
   id: string;
   name: string;
-  date: Date; // The specific date of the holiday
+  date: Date;            // Observed date (after mondayisation/shift)
+  originalDate?: Date;   // Statutory/anchor date when observance is shifted
+  rangeEnd?: Date;       // End date for multi-day spans (school holidays)
   type: HolidayType;
-  regionIds?: RegionId[]; // If undefined, applies to all
+  regionIds?: RegionId[]; // NZ regions
+  stateIds?: StateId[];   // AU states
   description?: string;
 }
 
@@ -37,6 +55,7 @@ export interface CalendarDay {
   date: Date;
   isCurrentMonth: boolean;
   holidays: Holiday[];
+  isInSchoolBreak: boolean; // True if this day falls within any school holiday range
 }
 
 export interface ActivitySuggestion {
