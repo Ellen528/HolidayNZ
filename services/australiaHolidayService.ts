@@ -102,18 +102,20 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
     description: "Christian observance commemorating the crucifixion of Jesus Christ. One of the most restricted trading days in Australia, with most businesses closed.",
   });
 
-  // Easter Saturday
+  // Easter Saturday — NOT observed in WA
   holidays.push({
     id: `au-eastersat-${year}`, name: "Easter Saturday",
-    date: addDays(easter, -1), type: HolidayType.Public,
-    description: "The day between Good Friday and Easter Sunday. Observed as a public holiday in most Australian states and territories.",
+    date: addDays(easter, -1), type: HolidayType.Regional,
+    stateIds: [StateId.ACT, StateId.NSW, StateId.NT, StateId.QLD, StateId.SA, StateId.TAS, StateId.VIC],
+    description: "The day between Good Friday and Easter Sunday. Observed as a public holiday in ACT, NSW, NT, QLD, SA, TAS, and VIC. Western Australia does not observe Easter Saturday as a public holiday.",
   });
 
-  // Easter Sunday
+  // Easter Sunday — ACT and NSW only
   holidays.push({
     id: `au-eastersun-${year}`, name: "Easter Sunday",
-    date: easter, type: HolidayType.Public,
-    description: "Christian celebration of the resurrection of Jesus Christ. Observed as a public holiday in ACT and NSW.",
+    date: easter, type: HolidayType.Regional,
+    stateIds: [StateId.ACT, StateId.NSW],
+    description: "Christian celebration of the resurrection of Jesus Christ. Observed as a public holiday in ACT and NSW only. All other states and territories do not observe Easter Sunday.",
   });
 
   // Easter Monday
@@ -161,6 +163,11 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
   const fourthMonSep = getNthDayOfMonth(year, 8, 1, 4); // 4th Mon September (WA KB)
   const firstTueNov  = getNthDayOfMonth(year, 10, 2, 1); // 1st Tue November (Melb Cup)
   const reconDay     = mondayOnOrAfter(new Date(year, 4, 27)); // ACT: Mon on/after 27 May
+  const secondWedSep = getNthDayOfMonth(year, 8, 3, 2);  // 2nd Wed September (SA Show)
+  // AFL Grand Final Friday (VIC): Friday before the last Saturday of September
+  const sepLastDay   = new Date(year, 9, 0); // Sep 30
+  const lastSatSep   = addDays(sepLastDay, -((sepLastDay.getDay() - 6 + 7) % 7));
+  const aflFinalFri  = addDays(lastSatSep, -1);
 
   // ACT
   holidays.push({ id: `au-act-canberra-${year}`, name: "Canberra Day", date: secondMonMar, type: HolidayType.Regional, stateIds: [StateId.ACT], description: "Celebrates the founding of Australia's capital city, Canberra, established as the national capital on 12 March 1913. Observed on the second Monday in March." });
@@ -196,6 +203,7 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
   // SA
   holidays.push({ id: `au-sa-adelaidecup-${year}`, name: "Adelaide Cup Day", date: secondMonMar, type: HolidayType.Regional, stateIds: [StateId.SA], description: "Originally marking the Adelaide Cup horse race, this South Australian public holiday is now held on the second Monday in March. The Cup itself moved to a different date but the holiday remains." });
   holidays.push({ id: `au-sa-kingsbd-${year}`, name: "King's Birthday", date: secondMonJun, type: HolidayType.Regional, stateIds: [StateId.SA], description: "Celebrates the official birthday of King Charles III. Observed on the second Monday in June." });
+  holidays.push({ id: `au-sa-adelaideshow-${year}`, name: "Royal Adelaide Show", date: secondWedSep, type: HolidayType.Regional, stateIds: [StateId.SA], description: "Public holiday for the greater Adelaide metropolitan area for the Royal Adelaide Show, one of Australia's largest agricultural and community shows. Held annually in early September; the Show Day falls on the Wednesday during the show week." });
   holidays.push({ id: `au-sa-labour-${year}`, name: "Labour Day", date: firstMonOct, type: HolidayType.Regional, stateIds: [StateId.SA], description: "Commemorates the workers' rights movement. Observed on the first Monday in October." });
 
   // TAS
@@ -220,6 +228,7 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
   // VIC
   holidays.push({ id: `au-vic-labour-${year}`, name: "Labour Day", date: secondMonMar, type: HolidayType.Regional, stateIds: [StateId.VIC], description: "Commemorates the fight for the eight-hour working day. The eight-hour day movement started in Melbourne in 1856, making Victoria the birthplace of the 40-hour work week." });
   holidays.push({ id: `au-vic-kingsbd-${year}`, name: "King's Birthday", date: secondMonJun, type: HolidayType.Regional, stateIds: [StateId.VIC], description: "Celebrates the official birthday of King Charles III. Observed on the second Monday in June in Victoria." });
+  holidays.push({ id: `au-vic-aflgf-${year}`, name: "AFL Grand Final Friday", date: aflFinalFri, type: HolidayType.Regional, stateIds: [StateId.VIC], description: "A public holiday for metropolitan Melbourne (and many regional VIC areas) on the Friday before the AFL Grand Final. Introduced as a permanent public holiday in Victoria in 2015. The Grand Final is traditionally held on the last Saturday of September at the Melbourne Cricket Ground." });
   holidays.push({ id: `au-vic-melbcup-${year}`, name: "Melbourne Cup Day", date: firstTueNov, type: HolidayType.Regional, stateIds: [StateId.VIC], description: "The Melbourne Cup — 'the race that stops a nation' — is run on the first Tuesday in November. The day is a public holiday for metropolitan Melbourne and some regional areas in Victoria." });
 
   // WA
