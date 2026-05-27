@@ -229,7 +229,9 @@ async function main() {
   const bar = '='.repeat(62);
   console.log(`\n${bar}`);
   console.log(` AU HOLIDAY VERIFICATION — ${YEAR}`);
-  console.log(` Run: ${runDate}  |  Source: data.gov.au Australian Public Holidays`);
+  console.log(` Run: ${runDate}`);
+  console.log(` Authoritative source : ${FAIRWORK_URL}/${YEAR}-public-holidays`);
+  console.log(` Machine-readable CSV : ${DATA_GOV_URLS[YEAR] ? `data.gov.au (${YEAR})` : YEAR === 2026 ? 'community Gist (mirrors retired data.gov.au format)' : 'not available — set AU_HOLIDAYS_CSV_URL'}`);
   console.log(`${bar}\n`);
 
   const [officialMap, appMap] = await Promise.all([
@@ -238,8 +240,8 @@ async function main() {
   ]);
 
   if (officialMap.size === 0) {
-    console.log('⚠️  No official data retrieved — skipping automated comparison.');
-    console.log('   Manually verify at: https://www.australia.gov.au/public-holidays\n');
+    console.log('⚠️  No machine-readable data retrieved — skipping automated comparison.');
+    console.log(`   Verify manually at: ${FAIRWORK_URL}/${YEAR}-public-holidays\n`);
     printSchoolSources();
     process.exit(0);
   }
