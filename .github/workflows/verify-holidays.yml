@@ -15,7 +15,7 @@ on:
 
 jobs:
   verify-au-holidays:
-    name: AU Holidays vs data.gov.au
+    name: AU Holidays vs australia.com
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -79,7 +79,10 @@ jobs:
                 '## Automated Holiday Verification Failed',
                 '',
                 'The quarterly check found discrepancies between `services/australiaHolidayService.ts`',
-                'and the official [data.gov.au Australian Public Holidays](https://data.gov.au/dataset/ds-dga-b1bc6077-dadd-4f61-9f8c-002ab2cdff10) dataset.',
+                'and [australia.com (Tourism Australia)](https://www.australia.com/en-nz/facts-and-planning/when-to-go/australian-public-holidays.html).',
+                '',
+                'Cross-reference the authoritative source before updating:',
+                'https://www.fairwork.gov.au/employment-conditions/public-holidays',
                 '',
                 '```',
                 report.slice(0, 6000),  // GitHub issue body limit
