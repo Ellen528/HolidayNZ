@@ -1,19 +1,17 @@
 /**
  * verify-au-holidays.ts
  *
- * Scrapes the authoritative Australian public holiday data from
- * fairwork.gov.au (Fair Work Ombudsman) and compares it against the holidays
- * computed by australiaHolidayService.ts.
+ * Compares the Australian public holidays computed by australiaHolidayService.ts
+ * against an external source, in priority order:
+ *
+ *   1. fairwork.gov.au (Fair Work Ombudsman) — authoritative, most comprehensive.
+ *      Accessible from most machines; may timeout from cloud CI IP ranges.
+ *   2. australia.com (Tourism Australia) — official government body, more permissive
+ *      to automated access; used automatically if fairwork times out or errors.
+ *   3. AU_HOLIDAYS_CSV_URL env var — ad-hoc CSV in data.gov.au format.
  *
  * Usage:  npx tsx scripts/verify-au-holidays.ts [year]
  * CI:     exits 0 = all matched, exits 1 = mismatches found
- *
- * Source:
- *   Fair Work Ombudsman — https://www.fairwork.gov.au/employment-conditions/public-holidays
- *   Each year has its own page: /2026-public-holidays, /2027-public-holidays, …
- *
- * Fallback — supply a CSV URL via env var (data.gov.au format):
- *   AU_HOLIDAYS_CSV_URL=https://... npx tsx scripts/verify-au-holidays.ts
  */
 
 import { getAustraliaHolidaysForYear } from '../services/australiaHolidayService';
@@ -21,8 +19,12 @@ import { HolidayType } from '../types';
 
 const YEAR = parseInt(process.argv[2] ?? '') || new Date().getFullYear();
 
-// ── Source ─────────────────────────────────────────────────────────────────────
-const FAIRWORK_BASE = 'https://www.fairwork.gov.au/employment-conditions/public-holidays';
+// ── Sources ────────────────────────────────────────────────────────────────────
+const FAIRWORK_BASE  = 'https://www.fairwork.gov.au/employment-conditions/public-holidays';
+const AUSTRALIA_COM  = 'https://www.australia.com/en-nz/facts-and-planning/when-to-go/australian-public-holidays.html';
+
+// Realistic browser User-Agent — reduces chance of bot-detection blocks
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // ── Holidays not explicitly listed on fairwork.gov.au ─────────────────────────
 // These are flagged for manual annual review rather than treated as mismatches.
@@ -150,14 +152,16 @@ async function fetchFromFairwork(year: number): Promise<Map<string, Set<string>>
 
   let html: string;
   try {
-    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(15_000) });
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000),
+      headers: { 'User-Agent': BROWSER_UA, 'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8' },
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     html = await res.text();
   } catch (err) {
-    console.log(`\n⚠️  Could not fetch fairwork.gov.au: ${err}`);
-    console.log(`   URL: ${url}`);
-    console.log(`   Override: AU_HOLIDAYS_CSV_URL=<csv-url> npx tsx scripts/verify-au-holidays.ts\n`);
-    return map;
+    // Re-throw so fetchOfficial() can try the australia.com fallback
+    throw err;
   }
 
   // fairwork structure:
@@ -202,6 +206,126 @@ async function fetchFromFairwork(year: number): Promise<Map<string, Set<string>>
   return map;
 }
 
+// ── australia.com fallback scraper ────────────────────────────────────────────
+//
+// Used automatically when fairwork.gov.au is unreachable (e.g. cloud CI IPs
+// that fairwork's CDN blocks).  australia.com is Tourism Australia (a federal
+// government body) and allows automated access from any IP.
+//
+// Coverage is slightly narrower than fairwork: it omits some TAS/NT regional
+// holidays that fairwork lists.  Those are already in MANUAL_VERIFY so the
+// comparison still exits 0 when all standard holidays match.
+
+/** Split a text blob into "DayName, D Month: Name" entry strings. */
+function splitAusEntries(text: string): string[] {
+  const DAYS_P   = DAYS_PAT;
+  const MONTHS_P = MONTHS_PAT;
+  return text
+    .split(new RegExp(`(?=(?:${DAYS_P}),\\s+\\d+\\s+(?:${MONTHS_P})(?:\\*+)?:)`))
+    .map(s => s.trim())
+    .filter(s => new RegExp(`^(?:${DAYS_P}),`).test(s));
+}
+
+/** Parse "DayName, D Month[*]: Holiday Name[**]" (australia.com format). */
+function parseAusEntry(entry: string, year: number): { dateStr: string; name: string } | null {
+  const re = new RegExp(
+    `^(?:${DAYS_PAT}),\\s+(\\d+)\\s+(${MONTHS_PAT})(?:\\*+)?:\\s+(.+?)(?:\\*+)?\\s*$`
+  );
+  const m = entry.match(re);
+  if (!m) return null;
+  const day   = parseInt(m[1]);
+  const month = MONTHS_MAP[m[2]];
+  const name  = m[3]
+    .replace(/\s*\*.*$/s, '')   // strip footnotes
+    .replace(new RegExp(`\\s+(?:${DAYS_PAT})\\s+(?:before|after|subject|tbc|date)\\b.*$`, 'si'), '')
+    .trim();
+  if (!name) return null;
+  return { dateStr: `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`, name };
+}
+
+// australia.com section headings → jurisdiction code
+const AUS_COM_SECTIONS: [string, string][] = [
+  ['national public holidays', 'nat'],
+  ['other public holidays declared', 'skip'],
+  ['australian capital territory', 'act'],
+  ['new south wales', 'nsw'],
+  ['northern territory', 'nt'],
+  ['queensland', 'qld'],
+  ['south australia', 'sa'],
+  ['tasmania', 'tas'],
+  ['victoria', 'vic'],
+  ['western australia', 'wa'],
+];
+
+// Additional aliases needed for australia.com naming (beyond those in ALIASES)
+const AUS_COM_EXTRA_ALIASES: Record<string, string> = {
+  "boxing day observed": "boxing day",
+  "boxing day/proclamation day": "boxing day",
+};
+
+function ausComNormName(n: string): string {
+  const lower = normName(n);
+  return AUS_COM_EXTRA_ALIASES[lower] ?? lower;
+}
+
+async function fetchFromAustraliaCom(year: number): Promise<Map<string, Set<string>>> {
+  const map = new Map<string, Set<string>>();
+  let html: string;
+  try {
+    const res = await fetch(AUSTRALIA_COM, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20_000),
+      headers: { 'User-Agent': BROWSER_UA, 'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+    html = await res.text();
+  } catch (err) {
+    throw err; // propagate so fetchOfficial can report both failures
+  }
+
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g,          (_, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
+    .replace(/&rsquo;|&lsquo;/g, "'").replace(/&[a-z]+;/g, ' ')
+    .replace(/\s+/g, ' ');
+
+  const lc         = text.toLowerCase();
+  const yearMarker = `australian public holidays ${year}`;
+  const startIdx   = lc.indexOf(yearMarker);
+  if (startIdx === -1) return map;
+
+  const nextYearIdx = lc.indexOf(`australian public holidays ${year + 1}`, startIdx + yearMarker.length);
+  const section     = text.slice(startIdx, nextYearIdx === -1 ? undefined : nextYearIdx);
+  const secLc       = section.toLowerCase();
+
+  const boundaries: { pos: number; juris: string }[] = [];
+  for (const [heading, juris] of AUS_COM_SECTIONS) {
+    const pos = secLc.indexOf(heading);
+    if (pos !== -1) boundaries.push({ pos, juris });
+  }
+  boundaries.sort((a, b) => a.pos - b.pos);
+  if (boundaries.length === 0) return map;
+
+  for (let i = 0; i < boundaries.length; i++) {
+    const { pos, juris } = boundaries[i];
+    if (juris === 'skip') continue;
+    const nextPos = i + 1 < boundaries.length ? boundaries[i + 1].pos : section.length;
+    const chunk   = section.slice(pos, nextPos);
+    for (const entry of splitAusEntries(chunk)) {
+      const parsed = parseAusEntry(entry, year);
+      if (!parsed) continue;
+      const key = `${parsed.dateStr}|${ausComNormName(parsed.name)}`;
+      if (!map.has(key)) map.set(key, new Set());
+      map.get(key)!.add(juris);
+    }
+  }
+  return map;
+}
+
 // ── CSV fallback (AU_HOLIDAYS_CSV_URL override) ────────────────────────────────
 
 function parseCsvDate(raw: string): string {
@@ -243,6 +367,7 @@ async function fetchFromCsv(csvUrl: string, year: number): Promise<Map<string, S
 // ── Dispatch to correct source ─────────────────────────────────────────────────
 
 async function fetchOfficial(year: number): Promise<{ map: Map<string, Set<string>>; label: string }> {
+  // 0. Manual CSV override — highest priority
   const csvOverride = process.env.AU_HOLIDAYS_CSV_URL;
   if (csvOverride) {
     console.log(`   CSV override: ${csvOverride}`);
@@ -254,8 +379,23 @@ async function fetchOfficial(year: number): Promise<{ map: Map<string, Set<strin
       return { map: new Map(), label: 'CSV override (failed)' };
     }
   }
-  const map = await fetchFromFairwork(year);
-  return { map, label: `fairwork.gov.au (Fair Work Ombudsman)` };
+
+  // 1. Try fairwork.gov.au — authoritative source
+  try {
+    const map = await fetchFromFairwork(year);
+    return { map, label: 'fairwork.gov.au (Fair Work Ombudsman)' };
+  } catch (err) {
+    console.log(`\n⚠️  fairwork.gov.au unreachable (${err}) — trying australia.com fallback…`);
+  }
+
+  // 2. Fall back to australia.com — official government body, more permissive to CI IPs
+  try {
+    const map = await fetchFromAustraliaCom(year);
+    return { map, label: 'australia.com (Tourism Australia) [fairwork.gov.au was unreachable]' };
+  } catch (err) {
+    console.log(`⚠️  australia.com also unreachable: ${err}`);
+    return { map: new Map(), label: 'no source available' };
+  }
 }
 
 // ── Build app holiday map ──────────────────────────────────────────────────────
