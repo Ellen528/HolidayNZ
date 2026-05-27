@@ -1,16 +1,16 @@
 /**
  * verify-au-holidays.ts
  *
- * Scrapes australia.com (Tourism Australia, a federal government body) and
- * compares the listed public holidays against australiaHolidayService.ts.
+ * Scrapes the authoritative Australian public holiday data from
+ * fairwork.gov.au (Fair Work Ombudsman) and compares it against the holidays
+ * computed by australiaHolidayService.ts.
  *
  * Usage:  npx tsx scripts/verify-au-holidays.ts [year]
  * CI:     exits 0 = all matched, exits 1 = mismatches found
  *
- * Why australia.com and not fairwork.gov.au?
- *   fairwork.gov.au is the legal authoritative source but returns HTTP 403 for
- *   automated requests.  australia.com is an official government body (Tourism
- *   Australia), allows programmatic access, and matches fairwork.gov.au in content.
+ * Source:
+ *   Fair Work Ombudsman — https://www.fairwork.gov.au/employment-conditions/public-holidays
+ *   Each year has its own page: /2026-public-holidays, /2027-public-holidays, …
  *
  * Fallback — supply a CSV URL via env var (data.gov.au format):
  *   AU_HOLIDAYS_CSV_URL=https://... npx tsx scripts/verify-au-holidays.ts
@@ -21,54 +21,61 @@ import { HolidayType } from '../types';
 
 const YEAR = parseInt(process.argv[2] ?? '') || new Date().getFullYear();
 
-// ── Source URLs ────────────────────────────────────────────────────────────────
-const FAIRWORK_URL   = 'https://www.fairwork.gov.au/employment-conditions/public-holidays';
-const AUSTRALIA_COM  = 'https://www.australia.com/en-nz/facts-and-planning/when-to-go/australian-public-holidays.html';
+// ── Source ─────────────────────────────────────────────────────────────────────
+const FAIRWORK_BASE = 'https://www.fairwork.gov.au/employment-conditions/public-holidays';
 
-// ── Holidays not listed on australia.com — flagged for manual check ────────────
-// australia.com is a tourist guide; it omits city-specific shows, part-day
-// holidays, and state-specific ANZAC substitute days.
+// ── Holidays not explicitly listed on fairwork.gov.au ─────────────────────────
+// These are flagged for manual annual review rather than treated as mismatches.
+// Mostly city/sub-state show days whose dates are set by local show societies.
 const MANUAL_VERIFY = new Set([
-  'AFL Grand Final Friday',
-  'Royal Adelaide Show',
-  'Royal Queensland Show',
-  'Alice Springs Show Day',
-  'Tennant Creek Show Day',
-  'Katherine Show Day',
-  'Darwin Show Day',
-  'Borroloola Show Day',
-  'Devonport Cup',
-  'Royal Hobart Regatta',
-  'Launceston Cup',
-  'AGFEST',
-  'Burnie Show',
-  'Royal Launceston Show',
-  'Flinders Island Show',
-  'Royal Hobart Show',
-  'Devonport Show',
-  'Bank Holiday',                   // NSW only; tourist sites omit it
-  'Melbourne Cup Day',              // metro VIC/TAS — inconsistently listed
-  'Easter Tuesday',                 // TAS restricted PH
-  'Recreation Day',                 // TAS (northern only)
-  'King Island Show',               // TAS regional
-  'Christmas Eve (part-day)',       // part-day hospitality holiday — not on tourist sites
-  "New Year's Eve (part-day)",      // part-day — not on tourist sites
-  'ANZAC Day (additional holiday)', // only in years when Apr 25 is a weekend; not on australia.com
+  'AFL Grand Final Friday',     // VIC — date subject to AFL schedule each year
+  'Royal Adelaide Show',        // SA — not listed on fairwork.gov.au
+  'Alice Springs Show Day',     // NT regional
+  'Tennant Creek Show Day',     // NT regional
+  'Katherine Show Day',         // NT regional
+  'Darwin Show Day',            // NT regional
+  'Borroloola Show Day',        // NT regional
+  'Devonport Cup',              // TAS regional
+  'Launceston Cup',             // TAS regional
+  'AGFEST',                     // TAS regional
+  'Burnie Show',                // TAS regional
+  'Royal Launceston Show',      // TAS regional
+  'Flinders Island Show',       // TAS regional
+  'Devonport Show',             // TAS regional
+  'Bank Holiday',               // NSW — not listed on fairwork.gov.au
+  'King Island Show',           // TAS regional
 ]);
 
-// ── Name aliases: australia.com name → our app's canonical name ───────────────
+// ── Name aliases: fairwork.gov.au name → our app's canonical name ──────────────
+// fairwork uses several naming conventions that differ from our app.
 const ALIASES: Record<string, string> = {
-  "holy saturday":               "easter saturday",
-  "queen's birthday":            "king's birthday",
-  "christmas":                   "christmas day",
-  "boxing day observed":         "boxing day",   // australia.com calls the substitute this
-  "boxing day/proclamation day": "boxing day",
-  "proclamation day":            "boxing day",
-  "family & community day":      "canberra day",
-  "melbourne cup":               "melbourne cup day",
+  // Easter Saturday — different wording per state
+  "saturday before easter sunday":               "easter saturday",  // VIC
+  "the day after good friday":                   "easter saturday",  // QLD
+  "easter saturday - the day after good friday": "easter saturday",  // ACT (en-dash normalised to -)
+
+  // Substitute / additional public holidays
+  "additional public holiday for anzac day":                "anzac day (additional holiday)",
+  "additional public holiday for boxing day":               "boxing day",
+  "additional public holiday for christmas day":            "christmas day",
+  "additional public holiday for proclamation day holiday": "boxing day",
+
+  // SA calls its Boxing Day "Proclamation Day holiday"
+  "proclamation day holiday": "boxing day",
+
+  // Part-day hospitality holidays — fairwork shows timing in parentheses which
+  // parseFairworkEntry strips, leaving just the base name → alias to our canonical
+  "christmas eve":  "christmas eve (part-day)",
+  "new year's eve": "new year's eve (part-day)",
+
+  // Melbourne Cup
+  "melbourne cup": "melbourne cup day",
+
+  // Historical alias (pre-2022)
+  "queen's birthday": "king's birthday",
 };
 
-// ── HTML → holiday-entry parsing ───────────────────────────────────────────────
+// ── HTML parsing helpers ───────────────────────────────────────────────────────
 
 const MONTHS_MAP: Record<string, number> = {
   January: 1, February: 2, March: 3, April: 4, May: 5, June: 6,
@@ -77,63 +84,25 @@ const MONTHS_MAP: Record<string, number> = {
 const DAYS_PAT   = 'Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday';
 const MONTHS_PAT = Object.keys(MONTHS_MAP).join('|');
 
-/**
- * Split a text blob into individual "DayName, D Month[*]: Name" strings.
- * Uses a lookahead so each day-name becomes the start of its own entry.
- */
-function splitEntries(text: string): string[] {
-  return text
-    .split(new RegExp(`(?=(?:${DAYS_PAT}),\\s+\\d+\\s+(?:${MONTHS_PAT})(?:\\*+)?:)`))
-    .map(s => s.trim())
-    .filter(s => new RegExp(`^(?:${DAYS_PAT}),`).test(s));
+/** Decode common HTML entities in <li> text content. */
+function htmlDecode(s: string): string {
+  return s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g,          (_, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/&amp;/g,   '&')
+    .replace(/&nbsp;/g,  ' ')
+    .replace(/&rsquo;|&lsquo;/g, "'")
+    .replace(/&ndash;/g, '\u2013')
+    .replace(/&mdash;/g, '\u2014')
+    .replace(/&[a-z]+;/g, ' ');
 }
-
-/** Parse "DayName, D Month[*]: Holiday Name[**]" → { dateStr, name } | null */
-function parseEntry(entry: string, year: number): { dateStr: string; name: string } | null {
-  const re = new RegExp(
-    `^(?:${DAYS_PAT}),\\s+(\\d+)\\s+(${MONTHS_PAT})(?:\\*+)?:\\s+(.+?)(?:\\*+)?\\s*$`
-  );
-  const m = entry.match(re);
-  if (!m) return null;
-  const day   = parseInt(m[1]);
-  const month = MONTHS_MAP[m[2]];
-  const name  = m[3]
-    // Strip footnotes: everything from the first * onwards
-    // e.g. "King's Birthday *Regional areas in WA..." → "King's Birthday"
-    .replace(/\s*\*.*$/s, '')
-    // Strip scheduling placeholders like "Friday before AFL Grand Final: Subject to AFL schedule"
-    // Matches a day name followed by before/after/subject/tbc at a word boundary
-    .replace(new RegExp(`\\s+(?:${DAYS_PAT})\\s+(?:before|after|subject|tbc|date)\\b.*$`, 'si'), '')
-    .trim();
-  if (!name) return null;
-  const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  return { dateStr, name };
-}
-
-// australia.com section headings → jurisdiction code.
-// 'skip' entries act as boundary markers to terminate the previous chunk cleanly
-// without adding their own entries (e.g. "Other public holidays declared…" sits
-// between the national list and the state list and would bleed into Boxing Day).
-const SECTION_JURIS: [string, string][] = [
-  ['national public holidays', 'nat'],
-  ['other public holidays declared', 'skip'], // terminates the national chunk
-  ['australian capital territory', 'act'],
-  ['new south wales', 'nsw'],
-  ['northern territory', 'nt'],
-  ['queensland', 'qld'],
-  ['south australia', 'sa'],
-  ['tasmania', 'tas'],
-  ['victoria', 'vic'],
-  ['western australia', 'wa'],
-  // 'external territories' intentionally omitted — no entries in our app
-];
-
-// ── Shared helpers ─────────────────────────────────────────────────────────────
 
 function normName(n: string): string {
   const lower = n.trim().toLowerCase()
-    // Normalise all apostrophe/quote variants to a plain straight apostrophe
+    // Normalise all Unicode apostrophe/quote variants to a plain straight apostrophe
     .replace(/[\u2018\u2019\u201a\u201b\u2032\u2035'']/g, "'")
+    // Normalise en-dash and em-dash to a plain hyphen (ACT uses &ndash; in "Easter Saturday – …")
+    .replace(/[\u2013\u2014]/g, '-')
     .replace(/\s+/g, ' ');
   return ALIASES[lower] ?? lower;
 }
@@ -142,77 +111,91 @@ function localIso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// ── Fetch from australia.com ───────────────────────────────────────────────────
+// ── fairwork.gov.au scraper ────────────────────────────────────────────────────
 
-async function fetchFromAustraliaCom(year: number): Promise<Map<string, Set<string>>> {
+/**
+ * Parse a single <li> text from fairwork into { dateStr, name }.
+ *
+ * fairwork format: "DayName D Month: Holiday Name [optional parenthetical]"
+ * e.g.  "Thursday 1 January: New Year's Day"
+ *       "Monday 27 April: Additional public holiday for Anzac Day"
+ *       "Monday 9 February: Royal Hobart Regatta (only observed in certain areas…)"
+ *       "Subject to AFL schedule (date TBC): Friday before the AFL Grand Final"  ← skipped
+ */
+function parseFairworkEntry(text: string, year: number): { dateStr: string; name: string } | null {
+  const re = new RegExp(`^(?:${DAYS_PAT})\\s+(\\d+)\\s+(${MONTHS_PAT}):\\s+(.+)$`);
+  const m  = text.trim().match(re);
+  if (!m) return null;
+
+  const day   = parseInt(m[1]);
+  const month = MONTHS_MAP[m[2]];
+  const name  = m[3]
+    .replace(/\s*\([^)]*\)\s*$/, '') // strip trailing parenthetical, e.g. "(only observed in …)"
+    .trim();
+
+  if (!name) return null;
+  const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return { dateStr, name };
+}
+
+/**
+ * Fetch and parse fairwork.gov.au/…/{year}-public-holidays.
+ *
+ * Returns Map<"dateStr|normName", Set<stateCode|"nat">>.
+ * Holidays present in all 8 states are automatically collapsed to "nat".
+ */
+async function fetchFromFairwork(year: number): Promise<Map<string, Set<string>>> {
   const map = new Map<string, Set<string>>();
+  const url = `${FAIRWORK_BASE}/${year}-public-holidays`;
 
   let html: string;
   try {
-    const res = await fetch(AUSTRALIA_COM, { redirect: 'follow', signal: AbortSignal.timeout(15_000) });
+    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(15_000) });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
     html = await res.text();
   } catch (err) {
-    console.log(`\n⚠️  Could not fetch australia.com: ${err}`);
-    console.log(`   URL: ${AUSTRALIA_COM}`);
-    console.log(`   Verify manually at: ${FAIRWORK_URL}/${year}-public-holidays`);
+    console.log(`\n⚠️  Could not fetch fairwork.gov.au: ${err}`);
+    console.log(`   URL: ${url}`);
     console.log(`   Override: AU_HOLIDAYS_CSV_URL=<csv-url> npx tsx scripts/verify-au-holidays.ts\n`);
     return map;
   }
 
-  // Strip HTML tags and decode common entities.
-  // Numeric entities (decimal and hex) are decoded generically so that apostrophes
-  // encoded as &#x2019; or &#8217; produce the same character regardless of section.
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
-    .replace(/&rsquo;|&lsquo;/g, "'")
-    .replace(/&[a-z]+;/g, ' ')
-    .replace(/\s+/g, ' ');
+  // fairwork structure:
+  //   <h2><a name="act"></a>Australian Capital Territory</h2>
+  //   <ul><li>Thursday 1 January: New Year's Day</li>…</ul>
+  //
+  // Each state section starts with <h2> and has <a name="stateCode">.
+  const STATE_ANCHORS: Record<string, string> = {
+    act: 'act', nsw: 'nsw', nt: 'nt', qld: 'qld',
+    sa:  'sa',  tas: 'tas', vic: 'vic', wa:  'wa',
+  };
 
-  // Isolate this year's section (ends at next year's section or end of text)
-  const lc          = text.toLowerCase();
-  const yearMarker  = `australian public holidays ${year}`;
-  const startIdx    = lc.indexOf(yearMarker);
-  if (startIdx === -1) {
-    console.log(`\n⚠️  "${year}" section not found on australia.com — page structure may have changed\n`);
-    return map;
-  }
-  const nextYearIdx = lc.indexOf(`australian public holidays ${year + 1}`, startIdx + yearMarker.length);
-  const section     = text.slice(startIdx, nextYearIdx === -1 ? undefined : nextYearIdx);
-  const secLc       = section.toLowerCase();
+  const sections = html.split(/<h2[^>]*>/i);
+  for (const section of sections) {
+    // Find <a name="act"> to identify which state this is
+    const anchorMatch = section.match(/<a\s+name="([a-z]+)"\s*>/i);
+    if (!anchorMatch) continue;
+    const stateCode = STATE_ANCHORS[anchorMatch[1].toLowerCase()];
+    if (!stateCode) continue;
 
-  // Find the FIRST occurrence of each state heading (avoids false positives from footnotes)
-  const boundaries: { pos: number; juris: string }[] = [];
-  for (const [heading, juris] of SECTION_JURIS) {
-    const pos = secLc.indexOf(heading);
-    if (pos !== -1) boundaries.push({ pos, juris });
-  }
-  boundaries.sort((a, b) => a.pos - b.pos);
+    // Extract plain text of each <li>
+    const liItems = [...section.matchAll(/<li[^>]*>(.*?)<\/li>/gs)]
+      .map(m => htmlDecode(m[1].replace(/<[^>]+>/g, '').trim()));
 
-  if (boundaries.length === 0) {
-    console.log(`\n⚠️  No state sections found in ${year} section — page structure may have changed\n`);
-    return map;
-  }
-
-  // Parse each jurisdiction's chunk
-  for (let i = 0; i < boundaries.length; i++) {
-    const { pos, juris } = boundaries[i];
-    if (juris === 'skip') continue; // boundary-only marker, not a real jurisdiction
-    const nextPos = i + 1 < boundaries.length ? boundaries[i + 1].pos : section.length;
-    const chunk   = section.slice(pos, nextPos);
-
-    for (const entry of splitEntries(chunk)) {
-      const parsed = parseEntry(entry, year);
+    for (const item of liItems) {
+      const parsed = parseFairworkEntry(item, year);
       if (!parsed) continue;
       const key = `${parsed.dateStr}|${normName(parsed.name)}`;
       if (!map.has(key)) map.set(key, new Set());
-      map.get(key)!.add(juris);
+      map.get(key)!.add(stateCode);
+    }
+  }
+
+  // Collapse holidays observed by all 8 states to "nat"
+  const ALL_STATES = new Set(Object.keys(STATE_ANCHORS));
+  for (const [key, states] of map) {
+    if (states.size === ALL_STATES.size && [...ALL_STATES].every(s => states.has(s))) {
+      map.set(key, new Set(['nat']));
     }
   }
 
@@ -232,8 +215,8 @@ function parseCsvDate(raw: string): string {
 }
 
 async function fetchFromCsv(csvUrl: string, year: number): Promise<Map<string, Set<string>>> {
-  const map = new Map<string, Set<string>>();
-  const res = await fetch(csvUrl, { redirect: 'follow', signal: AbortSignal.timeout(15_000) });
+  const map  = new Map<string, Set<string>>();
+  const res  = await fetch(csvUrl, { redirect: 'follow', signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   const text    = await res.text();
   const lines   = text.split(/\r?\n/).filter(l => l.trim());
@@ -271,8 +254,8 @@ async function fetchOfficial(year: number): Promise<{ map: Map<string, Set<strin
       return { map: new Map(), label: 'CSV override (failed)' };
     }
   }
-  const map = await fetchFromAustraliaCom(year);
-  return { map, label: 'australia.com (Tourism Australia)' };
+  const map = await fetchFromFairwork(year);
+  return { map, label: `fairwork.gov.au (Fair Work Ombudsman)` };
 }
 
 // ── Build app holiday map ──────────────────────────────────────────────────────
@@ -321,7 +304,7 @@ async function main() {
   console.log(`\n${bar}`);
   console.log(` AU HOLIDAY VERIFICATION — ${YEAR}`);
   console.log(` Run: ${runDate}`);
-  console.log(` Authoritative source : ${FAIRWORK_URL}/${YEAR}-public-holidays`);
+  console.log(` Source: ${FAIRWORK_BASE}/${YEAR}-public-holidays`);
 
   const { map: officialMap, label } = await fetchOfficial(YEAR);
 
@@ -330,7 +313,7 @@ async function main() {
 
   if (officialMap.size === 0) {
     console.log('⚠️  No comparison data retrieved — skipping automated comparison.');
-    console.log(`   Verify manually at: ${FAIRWORK_URL}/${YEAR}-public-holidays\n`);
+    console.log(`   Verify manually at: ${FAIRWORK_BASE}/${YEAR}-public-holidays\n`);
     printSchoolSources();
     process.exit(0);
   }
@@ -361,12 +344,12 @@ async function main() {
       const offStates = [...officialMap.get(key)!].sort().join(',');
       const appStates = [...appMap.get(key)!].sort().join(',');
       const stateNote = offStates !== appStates
-        ? `  ⚠ states: comparison=[${offStates}] app=[${appStates}]` : '';
+        ? `  ⚠ states: fairwork=[${offStates}] app=[${appStates}]` : '';
       matched.push(`  ✅  ${dateStr}  ${name}${stateNote}`);
     } else if (!inOfficial && inApp) {
       appOnly.push(`  ⚠️   ${dateStr}  ${name}  [app:${[...appMap.get(key)!].sort().join(',')}]`);
     } else {
-      missing.push(`  ❌  ${dateStr}  ${name}  [comparison:${[...officialMap.get(key)!].sort().join(',')}]`);
+      missing.push(`  ❌  ${dateStr}  ${name}  [fairwork:${[...officialMap.get(key)!].sort().join(',')}]`);
     }
   }
 
@@ -376,30 +359,28 @@ async function main() {
   matched.forEach(l => console.log(l));
 
   if (missing.length > 0) {
-    console.log(`\n❌ MISSING FROM APP (${missing.length}) — comparison source has these, app does not:`);
+    console.log(`\n❌ MISSING FROM APP (${missing.length}) — fairwork has these, app does not:`);
     missing.forEach(l => console.log(l));
     console.log('  → Update services/australiaHolidayService.ts');
-    console.log(`  → Cross-check at: ${FAIRWORK_URL}/${YEAR}-public-holidays`);
+    console.log(`  → Reference: ${FAIRWORK_BASE}/${YEAR}-public-holidays`);
   }
 
   if (appOnly.length > 0) {
-    console.log(`\n⚠️  APP-ONLY (${appOnly.length}) — app has these, comparison source does not:`);
+    console.log(`\n⚠️  APP-ONLY (${appOnly.length}) — app has these, fairwork does not:`);
     appOnly.forEach(l => console.log(l));
-    console.log('  → australia.com is a tourist guide and may omit some sub-state/restricted holidays.');
-    console.log(`  → Verify individually at: ${FAIRWORK_URL}/${YEAR}-public-holidays`);
+    console.log('  → These may be sub-state/restricted holidays not listed by fairwork.gov.au.');
+    console.log(`  → Verify at: ${FAIRWORK_BASE}/${YEAR}-public-holidays`);
   }
 
   if (manualCheck.length > 0) {
-    console.log(`\n🔍 MANUAL CHECK REQUIRED (${manualCheck.length}) — not tracked by australia.com:`);
+    console.log(`\n🔍 MANUAL CHECK REQUIRED (${manualCheck.length}) — city/sub-state holidays not listed on fairwork.gov.au:`);
     manualCheck.forEach(l => console.log(l));
     console.log('  → Verify dates annually:');
     console.log('      VIC AFL Grand Final   : https://www.afl.com.au');
     console.log('      SA Royal Adelaide Show: https://www.theshow.com.au');
-    console.log('      QLD Royal QLD Show    : https://www.ekka.com.au');
     console.log('      NT Show Days          : https://nt.gov.au/employ/rights-at-work/leave/public-holidays');
     console.log('      TAS Show Days         : https://worksafe.tas.gov.au/topics/laws-and-regulations/public-holidays');
-    console.log('      NT/SA/QLD Christmas Eve & New Year\'s Eve:');
-    console.log(`                              ${FAIRWORK_URL}/${YEAR}-public-holidays`);
+    console.log('      NSW Bank Holiday      : https://www.nsw.gov.au/about-nsw/public-holidays');
   }
 
   printSchoolSources();
