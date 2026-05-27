@@ -1,0 +1,98 @@
+name: Verify Holiday Data
+
+on:
+  # Quarterly: 1st of January, April, July, October at 09:00 UTC
+  schedule:
+    - cron: '0 9 1 1,4,7,10 *'
+
+  # Allow triggering manually from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      year:
+        description: 'Year to verify (leave blank for current year)'
+        required: false
+        type: string
+
+jobs:
+  verify-au-holidays:
+    name: AU Holidays vs data.gov.au
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write    # needed to open a GitHub issue on failure
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run verification
+        id: verify
+        # Continue so we can capture the output even if exit code is 1
+        continue-on-error: true
+        run: |
+          npx tsx scripts/verify-au-holidays.ts ${{ inputs.year || '' }} | tee verify-report.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Write job summary
+        run: |
+          echo '## AU Holiday Verification' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat verify-report.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open GitHub issue on mismatch (scheduled runs only)
+        if: steps.verify.outputs.exit_code == '1' && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('verify-report.txt', 'utf8');
+            const month  = new Date().toISOString().slice(0, 7);
+
+            // Don't open a duplicate if one is already open
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              state: 'open',
+              labels: 'data-accuracy',
+            });
+            if (existing.data.length > 0) {
+              console.log('Issue already open — skipping creation.');
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner:  context.repo.owner,
+              repo:   context.repo.repo,
+              title:  `⚠️ Holiday data mismatch detected (${month})`,
+              labels: ['data-accuracy'],
+              body: [
+                '## Automated Holiday Verification Failed',
+                '',
+                'The quarterly check found discrepancies between `services/australiaHolidayService.ts`',
+                'and the official [data.gov.au Australian Public Holidays](https://data.gov.au/dataset/ds-dga-b1bc6077-dadd-4f61-9f8c-002ab2cdff10) dataset.',
+                '',
+                '```',
+                report.slice(0, 6000),  // GitHub issue body limit
+                '```',
+                '',
+                '**Action required:** Review and update `services/australiaHolidayService.ts`.',
+                '',
+                '> _This issue was opened automatically by the `verify-holidays` workflow._',
+              ].join('\n'),
+            });
+
+      - name: Fail the job if mismatches were found
+        if: steps.verify.outputs.exit_code == '1'
+        run: |
+          echo "Mismatches found — see report above."
+          exit 1

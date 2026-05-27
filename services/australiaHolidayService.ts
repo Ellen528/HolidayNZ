@@ -102,20 +102,20 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
     description: "Christian observance commemorating the crucifixion of Jesus Christ. One of the most restricted trading days in Australia, with most businesses closed.",
   });
 
-  // Easter Saturday — NOT observed in WA
+  // Easter Saturday — NOT observed in TAS (has Easter Tuesday instead) or WA
   holidays.push({
     id: `au-eastersat-${year}`, name: "Easter Saturday",
     date: addDays(easter, -1), type: HolidayType.Regional,
-    stateIds: [StateId.ACT, StateId.NSW, StateId.NT, StateId.QLD, StateId.SA, StateId.TAS, StateId.VIC],
-    description: "The day between Good Friday and Easter Sunday. Observed as a public holiday in ACT, NSW, NT, QLD, SA, TAS, and VIC. Western Australia does not observe Easter Saturday as a public holiday.",
+    stateIds: [StateId.ACT, StateId.NSW, StateId.NT, StateId.QLD, StateId.SA, StateId.VIC],
+    description: "The day between Good Friday and Easter Sunday. Observed as a public holiday in ACT, NSW, NT, QLD, SA, and VIC. Tasmania observes Easter Tuesday instead. Western Australia does not observe Easter Saturday.",
   });
 
-  // Easter Sunday — ACT and NSW only
+  // Easter Sunday — ACT, NSW, QLD, VIC only (confirmed by fairwork.gov.au)
   holidays.push({
     id: `au-eastersun-${year}`, name: "Easter Sunday",
     date: easter, type: HolidayType.Regional,
-    stateIds: [StateId.ACT, StateId.NSW],
-    description: "Christian celebration of the resurrection of Jesus Christ. Observed as a public holiday in ACT and NSW only. All other states and territories do not observe Easter Sunday.",
+    stateIds: [StateId.ACT, StateId.NSW, StateId.QLD, StateId.VIC],
+    description: "Christian celebration of the resurrection of Jesus Christ. Observed as a public holiday in ACT, NSW, QLD, and VIC. NT, SA, TAS, and WA do not observe Easter Sunday as a public holiday.",
   });
 
   // Easter Monday
@@ -125,12 +125,24 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
     description: "The day after Easter Sunday, marking the end of the Easter long weekend. Observed nationally.",
   });
 
-  // ANZAC Day — 25 April (observed on the actual date; no national substitute for weekends)
+  // ANZAC Day — always 25 April; no mondayisation nationally
   holidays.push({
     id: `au-anzac-${year}`, name: "ANZAC Day",
     date: new Date(year, 3, 25), type: HolidayType.Public,
-    description: "Australia's most solemn national day, honouring those who served and died in wars. Named after the Australian and New Zealand Army Corps (ANZAC) who landed at Gallipoli on 25 April 1915. Dawn services are held nationally. ANZAC Day is observed on 25 April regardless of the day of the week.",
+    description: "Australia's most solemn national day, honouring those who served and died in wars. Named after the Australian and New Zealand Army Corps (ANZAC) who landed at Gallipoli on 25 April 1915. Observed on 25 April regardless of the day of the week.",
   });
+  // ANZAC Day additional holiday — ACT, NSW, WA when April 25 falls on a weekend
+  const anzacDow = new Date(year, 3, 25).getDay();
+  if (anzacDow === 0 || anzacDow === 6) {
+    holidays.push({
+      id: `au-anzac-sub-${year}`, name: "ANZAC Day (additional holiday)",
+      date: addDays(new Date(year, 3, 25), anzacDow === 0 ? 1 : 2),
+      originalDate: new Date(year, 3, 25),
+      type: HolidayType.Regional,
+      stateIds: [StateId.ACT, StateId.NSW, StateId.WA],
+      description: "When ANZAC Day falls on a Saturday or Sunday, ACT, NSW, and WA observe an additional public holiday on the following Monday. NT, QLD, SA, TAS, and VIC observe only the 25 April date. Source: fairwork.gov.au.",
+    });
+  }
 
   // Christmas Day (mondayised if Sat/Sun)
   const xmasRaw = new Date(year, 11, 25);
@@ -140,15 +152,42 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
     description: "Christian celebration of the birth of Jesus Christ. A major national holiday when businesses close and families gather.",
   });
 
-  // Boxing Day — 26 December (mondayised, avoid clash with Christmas)
+  // Boxing Day — 26 December
+  // When Dec 26 falls on a weekend, most states observe BOTH the actual date AND a substitute Monday.
+  // NT, SA, TAS only observe the substitute Monday (not Dec 26 itself).
   const boxingRaw = new Date(year, 11, 26);
   const xmasObs = mondayise(xmasRaw);
   let boxingObs = mondayise(boxingRaw);
   if (boxingObs.getTime() === xmasObs.getTime()) boxingObs = addDays(boxingObs, 1);
+  // If Dec 26 is a weekend, add it as a separate entry for the states that observe the actual date
+  if (boxingRaw.getDay() === 0 || boxingRaw.getDay() === 6) {
+    holidays.push({
+      id: `au-boxing-actual-${year}`, name: "Boxing Day",
+      date: boxingRaw, type: HolidayType.Regional,
+      stateIds: [StateId.ACT, StateId.NSW, StateId.QLD, StateId.VIC, StateId.WA],
+      description: "Boxing Day falls on a weekend in this year. ACT, NSW, QLD, VIC, and WA observe both the actual 26 December date and a substitute weekday (Monday). NT, SA, and TAS observe only the substitute Monday.",
+    });
+  }
   holidays.push({
     id: `au-boxing-${year}`, name: "Boxing Day",
     date: boxingObs, originalDate: boxingRaw, type: HolidayType.Public,
     description: "The day after Christmas, known as Proclamation Day in South Australia. Traditionally a day for giving to those less fortunate; now a popular day for summer sport and retail sales.",
+  });
+
+  // Christmas Eve — part-day public holiday (NT from 7 pm, QLD from 6 pm, SA from 7 pm)
+  holidays.push({
+    id: `au-xmaseve-${year}`, name: "Christmas Eve (part-day)",
+    date: new Date(year, 11, 24), type: HolidayType.Regional,
+    stateIds: [StateId.NT, StateId.QLD, StateId.SA],
+    description: "Part-day public holiday on Christmas Eve, observed in NT (from 7 pm), QLD (from 6 pm), and SA (from 7 pm). Employees working after the nominated time are entitled to public holiday pay rates. Source: fairwork.gov.au.",
+  });
+
+  // New Year's Eve — part-day public holiday (NT and SA from 7 pm)
+  holidays.push({
+    id: `au-nyeve-${year}`, name: "New Year's Eve (part-day)",
+    date: new Date(year, 11, 31), type: HolidayType.Regional,
+    stateIds: [StateId.NT, StateId.SA],
+    description: "Part-day public holiday on New Year's Eve, observed in NT and SA from 7 pm to midnight. Employees working after 7 pm are entitled to public holiday pay rates. Source: fairwork.gov.au.",
   });
 
   // ── State-specific Public Holidays ────────────────────────────────────────
@@ -163,6 +202,7 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
   const fourthMonSep = getNthDayOfMonth(year, 8, 1, 4); // 4th Mon September (WA KB)
   const firstTueNov  = getNthDayOfMonth(year, 10, 2, 1); // 1st Tue November (Melb Cup)
   const reconDay     = mondayOnOrAfter(new Date(year, 4, 27)); // ACT: Mon on/after 27 May
+  const firstTueMar  = getNthDayOfMonth(year, 2, 2, 1);  // 1st Tue March (TAS King Island Show)
   const secondWedSep = getNthDayOfMonth(year, 8, 3, 2);  // 2nd Wed September (SA Show)
   // AFL Grand Final Friday (VIC): Friday before the last Saturday of September
   const sepLastDay   = new Date(year, 9, 0); // Sep 30
@@ -181,7 +221,7 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
   holidays.push({ id: `au-nsw-bank-${year}`, name: "Bank Holiday", date: firstMonAug, type: HolidayType.Regional, stateIds: [StateId.NSW], description: "A bank and public service holiday observed on the first Monday in August in New South Wales. Most banks and some businesses close." });
 
   // NT
-  holidays.push({ id: `au-nt-labour-${year}`, name: "Labour Day", date: firstMonMay, type: HolidayType.Regional, stateIds: [StateId.NT], description: "Commemorates the workers' rights movement. Observed on the first Monday in May in Queensland and the Northern Territory." });
+  holidays.push({ id: `au-nt-mayday-${year}`, name: "May Day", date: firstMonMay, type: HolidayType.Regional, stateIds: [StateId.NT], description: "The NT's name for its Labour Day equivalent, observed on the first Monday in May. Queensland observes the same date as 'Labour Day'. Known as May Day in the Northern Territory per official NT government proclamation." });
   holidays.push({ id: `au-nt-kingsbd-${year}`, name: "King's Birthday", date: secondMonJun, type: HolidayType.Regional, stateIds: [StateId.NT], description: "Celebrates the official birthday of King Charles III. Observed on the second Monday in June." });
   holidays.push({ id: `au-nt-picnic-${year}`, name: "Picnic Day", date: firstMonAug, type: HolidayType.Regional, stateIds: [StateId.NT], description: "A uniquely Northern Territory holiday, celebrated on the first Monday in August. Historically a day for community picnics and outdoor events, now a general public holiday." });
   // NT Show Days (local to specific towns — 2026 exact dates)
@@ -207,6 +247,7 @@ export const getAustraliaHolidaysForYear = (year: number): Holiday[] => {
   holidays.push({ id: `au-sa-labour-${year}`, name: "Labour Day", date: firstMonOct, type: HolidayType.Regional, stateIds: [StateId.SA], description: "Commemorates the workers' rights movement. Observed on the first Monday in October." });
 
   // TAS
+  holidays.push({ id: `au-tas-kingisland-${year}`, name: "King Island Show", date: firstTueMar, type: HolidayType.Regional, stateIds: [StateId.TAS], description: "Regional public holiday for King Island, Tasmania, held on the first Tuesday in March for the King Island Agricultural Show. Regional observance only." });
   holidays.push({ id: `au-tas-eighthrs-${year}`, name: "Eight Hours Day", date: secondMonMar, type: HolidayType.Regional, stateIds: [StateId.TAS], description: "Tasmania's Labour Day equivalent, commemorating the successful campaign for the 8-hour working day. Tasmanian stonemasons were among the first workers in the world to win the 8-hour day (1856)." });
   holidays.push({ id: `au-tas-eastertue-${year}`, name: "Easter Tuesday", date: addDays(easter, 2), type: HolidayType.Regional, stateIds: [StateId.TAS], description: "A Tasmania-specific public holiday observed on the Tuesday after Easter Sunday, extending the Easter break to five days. It is unique to the Tasmanian public service and some industries." });
   holidays.push({ id: `au-tas-kingsbd-${year}`, name: "King's Birthday", date: secondMonJun, type: HolidayType.Regional, stateIds: [StateId.TAS], description: "Celebrates the official birthday of King Charles III. Tasmania observes King's Birthday on the second Monday in June, alongside ACT, NSW, SA, and VIC." });
