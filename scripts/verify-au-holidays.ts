@@ -231,7 +231,12 @@ async function main() {
   console.log(` AU HOLIDAY VERIFICATION — ${YEAR}`);
   console.log(` Run: ${runDate}`);
   console.log(` Authoritative source : ${FAIRWORK_URL}/${YEAR}-public-holidays`);
-  console.log(` Machine-readable CSV : ${DATA_GOV_URLS[YEAR] ? `data.gov.au (${YEAR})` : YEAR === 2026 ? 'community Gist (mirrors retired data.gov.au format)' : 'not available — set AU_HOLIDAYS_CSV_URL'}`);
+  const csvNote = DATA_GOV_URLS[YEAR]
+    ? `data.gov.au official CSV (${YEAR})`
+    : YEAR === 2026
+      ? 'unofficial 2026 CSV by github.com/joshluongo (data.gov.au stopped publishing after 2025)'
+      : 'no CSV available — set AU_HOLIDAYS_CSV_URL to run comparison';
+  console.log(` Comparison CSV       : ${csvNote}`);
   console.log(`${bar}\n`);
 
   const [officialMap, appMap] = await Promise.all([
